@@ -1,0 +1,1369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retro Textures</title>
+<style>
+  :root {
+    --bg: #111214;
+    --panel: #18191c;
+    --line: #2a2c31;
+    --text: #d8d6d0;
+    --dim: #8a8780;
+    --accent: #e0a43a;
+    --input: #23252a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 12px/1.35 ui-monospace, "SF Mono", Menlo, monospace; }
+  #app { display: grid; grid-template-columns: 300px 1fr; height: 100vh; }
+  aside { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: 14px 14px 40px; }
+  h1 { font-size: 14px; margin: 0 0 2px; letter-spacing: .04em; color: var(--accent); }
+  .sub { color: var(--dim); margin: 0 0 12px; }
+  .sec { border-top: 1px solid var(--line); padding: 10px 0 6px; }
+  .sec h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 8px; font-weight: 600; }
+  .row { margin: 0 0 8px; }
+  .row.hidden { display: none; }
+  .lab { display: flex; justify-content: space-between; margin-bottom: 3px; }
+  .lab span:last-child { color: var(--accent); }
+  input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; }
+  select, button { background: var(--input); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+    font: inherit; padding: 4px 6px; }
+  select { width: 100%; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #111; border-color: var(--accent); font-weight: 600; }
+  .check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .check input { accent-color: var(--accent); margin: 0; }
+  .inline { display: flex; gap: 6px; align-items: center; }
+  .inline > * { flex: 1; }
+  #pal { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 6px; }
+  #pal input[type=color] { width: 30px; height: 24px; padding: 0; border: 1px solid var(--line); background: none; cursor: pointer; }
+  #pal input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+  #pal input[type=color]::-webkit-color-swatch { border: none; }
+  .palbtns { display: flex; gap: 4px; flex-wrap: wrap; }
+  .palbtns button { flex: 1; padding: 3px 4px; }
+  main { display: flex; flex-direction: column; min-width: 0; overflow-y: auto; }
+  #stage { padding: 14px 14px 0; }
+  #view { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--line); }
+  #transport { display: flex; gap: 10px; align-items: center; padding: 8px 14px; }
+  #transport input { flex: 1; }
+  #play { width: 64px; }
+  #phaseOut { color: var(--dim); min-width: 150px; text-align: right; }
+  #bottom { display: flex; gap: 18px; padding: 6px 14px 20px; flex-wrap: wrap; align-items: flex-start; }
+  .tilebox { display: flex; gap: 10px; }
+  #tile, #tile4 { image-rendering: pixelated; border: 1px solid var(--line); background: #000; display: block; }
+  #tile { width: 192px; height: 192px; }
+  #tile4 { width: 192px; height: 192px; }
+  .cap { color: var(--dim); margin-top: 4px; }
+  .exports { display: flex; flex-direction: column; gap: 6px; min-width: 220px; }
+  .exports .note { color: var(--dim); max-width: 280px; }
+  #rec.on { background: #c0392b; border-color: #c0392b; color: #fff; }
+  @media (max-width: 760px) {
+    #app { grid-template-columns: 1fr; height: auto; }
+    aside { border-right: none; border-bottom: 1px solid var(--line); order: 2; }
+    main { order: 1; }
+    #tile, #tile4 { width: 140px; height: 140px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1>RETRO TEXTURES</h1>
+    <p class="sub">PS1 / N64 tile generator</p>
+    <div id="controls"></div>
+  </aside>
+  <main>
+    <div id="stage"><canvas id="view"></canvas></div>
+    <div id="transport">
+      <button id="play" class="primary">Pause</button>
+      <input id="scrub" type="range" min="0" max="1" step="0.001" value="0">
+      <span id="phaseOut"></span>
+    </div>
+    <div id="bottom">
+      <div class="tilebox">
+        <div><canvas id="tile"></canvas><div class="cap" id="tileCap"></div></div>
+        <div><canvas id="tile4"></canvas><div class="cap">2×2 seam check</div></div>
+      </div>
+      <div class="exports">
+        <div class="inline"><span>Export scale</span>
+          <select id="expScale"><option value="1">1×</option><option value="4">4×</option><option value="8" selected>8×</option><option value="16">16×</option></select>
+        </div>
+        <button id="expTile">Save tile PNG</button>
+        <button id="expSheet">Save sprite sheet PNG</button>
+        <button id="rec">Record one loop (video)</button>
+        <button id="expJson">Copy preset JSON</button>
+        <div class="note" id="note">Sprite sheet uses the Frames setting (16 if smooth). Recording captures the main view at its current size.</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Shaders
+// ---------------------------------------------------------------------------
+const VERT = `#version 300 es
+void main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+
+const COMMON = `
+uvec3 pcg3d(uvec3 v){
+  v = v * 1664525u + 1013904223u;
+  v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+  v ^= v >> 16u;
+  v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+  return v;
+}
+float bayer4(ivec2 p){
+  int m[16] = int[16](0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5);
+  return (float(m[(p.y & 3) * 4 + (p.x & 3)]) + 0.5) / 16.0;
+}`;
+
+// Pass 1: build one N×N tile. Everything is periodic over the tile and over the
+// loop, so the tile wraps seamlessly and the animation repeats exactly.
+// Each material returns height (lit by a directional light), tone (position on the
+// palette ramp) and an optional tint mask; a shared stage turns those into color.
+const GEN = `#version 300 es
+precision highp float; precision highp int;
+uniform int uN, uMat, uStyle, uRotate, uScale, uOct, uRows, uCols, uEvolve, uFlow;
+uniform int uPalN, uRamp, uCycle, uFifteen, uSeed, uTintScale;
+// uPhase drives motion (flow, palette cycle); uEvolvePhase drives development (Evolve)
+uniform float uGain, uWarp, uPhase, uEvolvePhase, uContrast, uBright, uDither, uAux, uVar;
+uniform float uLight, uBump, uAngle, uGrain, uTintAmt;
+uniform vec3 uPal[16], uTint;
+out vec4 outCol;
+${COMMON}
+
+struct M { float h; float t; float m; };
+float gN, gS, gz, gph, geph, gF, gE, gGlow; ivec2 gSP, gPx; int giE;
+
+vec3 rnd3(ivec3 c){
+  uint s = uint(uSeed);
+  return vec3(pcg3d(uvec3(c) + uvec3(s * 7919u, s * 104729u, s * 15485863u))) / 4294967295.0;
+}
+ivec3 wrap3(ivec3 c, ivec3 p){ return ((c % p) + p) % p; }
+int wrap1(int c, int p){ return ((c % p) + p) % p; }
+
+// 3D gradient noise, periodic in x, y (tile) and z (loop time)
+float gn(vec3 p, ivec3 per){
+  ivec3 i = ivec3(floor(p)); vec3 f = fract(p);
+  vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  #define G(o) dot(rnd3(wrap3(i + o, per)) * 2.0 - 1.0, f - vec3(o))
+  float a = G(ivec3(0,0,0)), b = G(ivec3(1,0,0)), c = G(ivec3(0,1,0)), d = G(ivec3(1,1,0));
+  float e = G(ivec3(0,0,1)), g = G(ivec3(1,0,1)), h = G(ivec3(0,1,1)), k = G(ivec3(1,1,1));
+  return mix(mix(mix(a,b,u.x), mix(c,d,u.x), u.y), mix(mix(e,g,u.x), mix(h,k,u.x), u.y), u.z) * 1.6;
+}
+
+// fractal sum; ridged = true gives turbulence (sum of |noise|)
+float nsum(vec2 p, ivec2 per, bool ridged, int oct){
+  float a = 1.0, s = 0.0, n = 0.0, z = gz;
+  int ez = max(giE, 1);
+  for (int o = 0; o < 7; o++){
+    if (o >= oct) break;
+    float v = gn(vec3(p, z), ivec3(per, ez));
+    s += a * (ridged ? abs(v) : v);
+    n += a; p = p * 2.0 + vec2(17.13, 31.71); per *= 2; z *= 2.0; ez *= 2; a *= uGain;
+  }
+  return s / n;
+}
+float fbm(vec2 p, ivec2 per){ return nsum(p, per, false, uOct); }
+float turb(vec2 p, ivec2 per){ return nsum(p, per, true, uOct); }
+
+// periodic voronoi: x = F1, y = F2, z = cell id. Cells orbit in a loop when anim > 0.
+vec3 vor(vec2 p, ivec2 per, float anim){
+  ivec2 i = ivec2(floor(p)); vec2 f = fract(p);
+  float d1 = 9.0, d2 = 9.0, id = 0.0;
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++){
+    ivec2 c = wrap3(ivec3(i + ivec2(x, y), 0), ivec3(per, 1)).xy;
+    vec3 h = rnd3(ivec3(c, 91));
+    vec2 o = 0.15 + 0.7 * h.xy;
+    if (anim > 0.0){ float t = fract(geph * anim); o = 0.5 + 0.3 * vec2(sin(6.2831853 * (h.x + t)), cos(6.2831853 * (h.y + t))); }
+    float d = length(vec2(x, y) + o - f);
+    if (d < d1){ d2 = d1; d1 = d; id = h.z; } else if (d < d2) d2 = d;
+  }
+  return vec3(d1, d2, id);
+}
+
+M stone(vec2 uv){
+  vec3 c = vor(uv * gS, gSP, gE);
+  float n = fbm(uv * gS * 2.0, gSP * 2);
+  float cw = uAux * gS / gN;
+  float crack = smoothstep(cw * 0.6, cw * 1.4, c.y - c.x + 0.15 * n * cw);
+  float dome = 1.0 - c.x * 0.9;
+  return M(crack * (0.45 + 0.45 * dome + 0.12 * n),
+           mix(0.06, 0.5 + uVar * 0.3 * (c.z - 0.5) + 0.2 * n, crack), -1.0);
+}
+
+M brick(vec2 uv){
+  vec2 bp = uv * vec2(uCols, uRows);
+  if (mod(floor(bp.y), 2.0) > 0.5) bp.x += 0.5;
+  ivec2 ci = ivec2(floor(bp)); vec2 f = fract(bp);
+  ci = ivec2(wrap1(ci.x, uCols), wrap1(ci.y, uRows));
+  vec3 hs = rnd3(ivec3(ci, 17));
+  float n = fbm(uv * gS, gSP), n2 = fbm(uv * gS * 4.0 + 3.3, gSP * 4);
+  float e = min(min(f.x, 1.0 - f.x) * gN / float(uCols), min(f.y, 1.0 - f.y) * gN / float(uRows)) + n2 * 0.8;
+  float g = uAux * 0.5;
+  if (e < g) return M(0.0, 0.1 + 0.06 * n, 0.0);
+  float face = clamp((e - g) / 2.0, 0.0, 1.0);
+  return M((0.55 + 0.45 * face) * (0.9 + 0.1 * n),
+           0.55 + uVar * 0.28 * (hs.x - 0.5) + 0.18 * n, step(0.65, hs.y));
+}
+
+float slabEdge(int r, int k){ return float(k) + (rnd3(ivec3(wrap1(k, uCols), r, 33)).x - 0.5) * 0.6; }
+float rowEdge(int r){ return float(r) + (rnd3(ivec3(wrap1(r, uRows), 0, 35)).x - 0.5) * 0.6; }
+
+M tiles(vec2 uv){
+  float R = float(uRows), C = float(uCols);
+  float n = fbm(uv * gS, gSP), n2 = fbm(uv * gS * 4.0 + 3.3, gSP * 4);
+  float e, tone; vec3 hs;
+  if (uStyle == 0){ // checker
+    vec2 bp = uv * vec2(C, R); ivec2 ci = ivec2(floor(bp)); vec2 f = fract(bp);
+    ci = ivec2(wrap1(ci.x, uCols), wrap1(ci.y, uRows));
+    hs = rnd3(ivec3(ci, 29));
+    tone = ((ci.x + ci.y) & 1) == 1 ? 0.8 : 0.2;
+    e = min(min(f.x, 1.0 - f.x) * gN / C, min(f.y, 1.0 - f.y) * gN / R) + n2 * 0.3;
+  } else if (uStyle == 2){ // rubble wall: uneven rows of lumpy stones, deep gaps
+    float y = uv.y * R; int r = int(floor(y));
+    float bB = rowEdge(r), bT = rowEdge(r + 1);
+    if (y >= bT){ r++; bB = bT; bT = rowEdge(r + 1); }
+    else if (y < bB){ r--; bT = bB; bB = rowEdge(r); }
+    int rw = wrap1(r, uRows);
+    float x = uv.x * C + rnd3(ivec3(rw, 0, 31)).x * C;
+    int k = int(floor(x));
+    float bL = slabEdge(rw, k), bR = slabEdge(rw, k + 1);
+    if (x >= bR){ k++; bL = bR; bR = slabEdge(rw, k + 1); }
+    else if (x < bL){ k--; bR = bL; bL = slabEdge(rw, k); }
+    hs = rnd3(ivec3(wrap1(k, uCols), rw, 37));
+    // distance to the stone's edge in pixels, with rounded corners
+    float dx = min(x - bL, bR - x) * gN / C, dy = min(y - bB, bT - y) * gN / R, rc = gN / 14.0;
+    e = (dx < rc && dy < rc) ? rc - length(vec2(rc - dx, rc - dy)) : min(dx, dy);
+    e += n2 * 0.8;
+    float g = uAux * 0.5;
+    if (e < g) return M(0.0, 0.02 + 0.03 * n, -1.0);
+    float face = sqrt(clamp((e - g) / (gN / 12.0), 0.0, 1.0));
+    float lump = fbm(uv * gS + hs.xy * 9.0, gSP);
+    float speck = rnd3(ivec3(gPx, 38)).x;
+    return M(face * (0.55 + 0.45 * lump),
+             0.38 + 0.3 * lump + 0.15 * face + uVar * 0.22 * (hs.y - 0.5) + (speck > 0.94 ? 0.2 : 0.0), -1.0);
+  } else { // flagstone: rows of slabs with jittered widths
+    float y = uv.y * R; int r = wrap1(int(floor(y)), uRows); float fy = fract(y);
+    float x = uv.x * C + rnd3(ivec3(r, 0, 31)).x * C;
+    int k = int(floor(x));
+    float bL = slabEdge(r, k), bR = slabEdge(r, k + 1);
+    if (x >= bR){ k++; bL = bR; bR = slabEdge(r, k + 1); }
+    else if (x < bL){ k--; bR = bL; bL = slabEdge(r, k); }
+    hs = rnd3(ivec3(wrap1(k, uCols), r, 37));
+    tone = 0.55;
+    e = min(min(x - bL, bR - x) * gN / C, min(fy, 1.0 - fy) * gN / R) + n2 * 0.9;
+  }
+  float g = uAux * 0.5;
+  if (e < g) return M(0.0, 0.06 + 0.05 * n, -1.0);
+  float face = clamp((e - g) / 2.0, 0.0, 1.0);
+  return M((0.55 + 0.45 * face) * (0.9 + 0.1 * n), tone + uVar * 0.25 * (hs.x - 0.5) + 0.12 * n, -1.0);
+}
+
+M dirt(vec2 uv){
+  float n = fbm(uv * gS, gSP);
+  vec3 c = vor(uv * gS * 3.0, gSP * 3, 0.0);
+  float rad = 0.22 + 0.15 * fract(c.z * 7.0);
+  float peb = c.z > 1.0 - uAux * 0.6 ? 1.0 - smoothstep(rad * 0.4, rad, c.x) : 0.0;
+  return M(0.4 + 0.3 * n + peb * 0.6, 0.45 + 0.3 * n + peb * (0.15 + 0.2 * fract(c.z * 11.0)), -1.0);
+}
+
+M grass(vec2 uv){ // style 0: lumpy lit clumps plus 1px blades. style 1: classic N64-style mottle
+  float n = fbm(uv * gS, gSP);
+  if (uStyle == 1){
+    // soft blotches + per-pixel and 2×2 mottling, scattered lime and dark specks,
+    // some pixels pushed yellow through the tint mask
+    // Scale zooms the mottle: clump size is a power of two that divides the tile,
+    // about N / (16 × scale) pixels, so lower scale gives chunkier pixels
+    int k = 1 << int(clamp(round(log2(gN / (16.0 * gS))), 0.0, 4.0));
+    ivec2 cp = gPx / k;
+    float p1 = rnd3(ivec3(cp, 8)).x, p2 = rnd3(ivec3(cp / 2, 9)).x;
+    vec3 sp = rnd3(ivec3(cp, 10));
+    float t = 0.5 + 0.35 * n + 0.5 * (p1 - 0.5) + 0.3 * (p2 - 0.5);
+    if (sp.x > 1.0 - uAux * 0.07) t = 0.82 + 0.18 * sp.y;
+    else if (sp.x < uAux * 0.035) t = 0.12 + 0.1 * sp.y;
+    return M(0.5, t, step(0.72, sp.z));
+  }
+  vec3 c1 = vor(uv * gS * 2.0, gSP * 2, 0.0), c2 = vor(uv * gS * 5.0 + 0.37, gSP * 5, 0.0);
+  float clumps = clamp((1.0 - c1.x * c1.x * 1.2) * 0.55 + (1.0 - c2.x * c2.x * 1.5) * 0.45, 0.0, 1.0);
+  float colOff = floor(rnd3(ivec3(gPx.x, 0, 5)).x * 3.0);
+  float bl = rnd3(ivec3(gPx.x, (gPx.y + int(colOff)) / 3, 6)).x;
+  float blade = bl > 1.0 - uAux * 0.25 ? -1.0 : (bl < uAux * 0.15 ? 1.0 : 0.0);
+  return M(clumps * 0.8 + 0.2 * n + blade * 0.15, 0.25 + 0.5 * clumps + 0.2 * n + blade * 0.12, -1.0);
+}
+
+M water(vec2 uv){ // bright cells with a darker network, second layer adds glints
+  float fl = fract(gF * gph);
+  vec2 p1 = (uv + vec2(fl, 0.0)) * gS, p2 = (uv + vec2(1.0 - fl, fl)) * gS + vec2(0.37, 0.61);
+  vec2 w = vec2(fbm(p1 + 5.2, gSP), fbm(p1 + 1.3, gSP));
+  vec3 a = vor(p1 + w * 0.5, gSP, gE), b = vor(p2 + w.yx * 0.5, gSP, gE);
+  // only bright lines: layer b's cell edges full strength, layer a's dimmer
+  // Variation widens and softens the lines
+  float lw = 0.1 * max(uVar, 0.3);
+  float la = 1.0 - smoothstep(0.02, lw, a.y - a.x);
+  float lb = 1.0 - smoothstep(0.02, lw, b.y - b.x);
+  float glint = max(lb, la * 0.55);
+  return M(0.5 + 0.15 * w.x, 0.38 + 0.15 * w.x + uAux * 0.6 * glint, -1.0);
+}
+
+M lava(vec2 uv){ // style 0: dark crust plates, glowing seams. style 1: marbled magma
+  vec2 q = (uv + vec2(0.0, fract(gF * gph))) * gS;
+  vec2 w = vec2(fbm(q + 5.2, gSP), fbm(q + 1.3, gSP));
+  if (uStyle == 1){
+    // strongly warped noise; dark veins where it crosses zero
+    float n = fbm(q + 1.6 * w, gSP);
+    float n2 = fbm(q * 2.0 + 2.4 * w + 6.1, gSP * 2);
+    float t = 0.3 + 0.45 * smoothstep(0.0, uAux, abs(n)) + 0.15 * w.y
+            - 0.22 * (1.0 - smoothstep(0.0, uAux * 0.35, abs(n2)));
+    return M(t, t, -1.0);
+  }
+  vec3 c = vor(q + w * 0.6, gSP, gE);
+  float n = fbm(q * 2.0 + 3.0, gSP * 2);
+  float crack = 1.0 - smoothstep(uAux * 0.4, uAux, c.y - c.x);
+  float crust = 0.1 + 0.12 * n + 0.08 * c.z;
+  return M((1.0 - crack) * (0.6 + 0.25 * n), mix(crust, 0.7 + 0.3 * n, crack) + 0.3 * max(0.0, w.x - 0.35), -1.0);
+}
+
+M fire(vec2 uv){ // billowing clouds with dark turbulent gaps, rising
+  vec2 q = uv - vec2(0.0, fract(gF * gph));
+  float w = fbm(q * gS + vec2(9.1, 3.3), gSP);
+  vec2 p = q * gS + vec2(w * 0.8, w * 0.4);
+  float t = 0.55 + 0.8 * fbm(p, gSP) - 0.35 * turb(p * 2.0 + 1.7, gSP * 2);
+  t *= mix(1.0, clamp((1.0 - uv.y) * 1.5, 0.0, 1.0), uAux);
+  return M(t, t, -1.0);
+}
+
+M wood(vec2 uv){ // style 0 grain, 1 planks, 2 logs
+  float C = float(uCols);
+  float bx = uv.x * C; int bi = wrap1(int(floor(bx)), uCols); float fx = fract(bx);
+  if (uStyle == 0){ bi = 0; fx = 0.5; }
+  vec3 hb = rnd3(ivec3(bi, 0, 23));
+  float w = fbm(vec2(uv.x * gS * 4.0, uv.y * gS), ivec2(uScale * 4, uScale));
+  float fine = fbm(vec2(uv.x * gS * 16.0, uv.y * gS * 2.0) + 5.1, ivec2(uScale * 16, uScale * 2));
+  float rf = fract(uv.x * floor(uAux) + w * 0.6 + hb.x * 7.0);
+  float ring = smoothstep(0.72, 0.95, rf);
+  float t = 0.5 + 0.2 * rf - 0.38 * ring + 0.2 * fine + uVar * 0.25 * (hb.y - 0.5);
+  float h = 0.6 + 0.15 * fine - 0.1 * ring;
+  float ex = min(fx, 1.0 - fx) * gN / C;
+  if (uStyle == 1){
+    float e = min(ex, abs(fract(uv.y - hb.z + 0.5) - 0.5) * gN);
+    if (e < 0.75) return M(0.0, 0.05, -1.0);
+    h *= 0.7 + 0.3 * clamp(e / 1.5, 0.0, 1.0);
+  } else if (uStyle == 2){
+    float prof = sqrt(max(0.0, 1.0 - pow(2.0 * fx - 1.0, 2.0)));
+    if (ex < 0.6) return M(0.0, 0.04, -1.0);
+    h = prof * 0.9 + 0.1 * fine; t *= 0.6 + 0.4 * prof;
+  }
+  return M(h, t, -1.0);
+}
+
+M plaster(vec2 uv){ // smooth base, recessed wandering cracks (tinted)
+  float base = fbm(uv * gS, gSP);
+  float v = nsum(uv * gS * 2.0 + vec2(4.4, 1.9), gSP * 2, false, 3);
+  float crack = 1.0 - smoothstep(uAux * 0.05, uAux * 0.15, abs(v));
+  return M(0.6 + 0.2 * base - crack * 0.7, 0.6 + 0.25 * base - crack * 0.3, crack);
+}
+
+M marble(vec2 uv){
+  float w = fbm(uv * gS, gSP), blot = fbm(uv * gS * 2.0 + 7.7, gSP * 2);
+  float K = float(uCols);
+  float vein = pow(1.0 - abs(sin(6.28318 * (uv.x * K + uv.y * K + w * 1.5))), uAux);
+  return M(0.5 + 0.1 * blot, 0.45 + 0.3 * blot + 0.3 * vein, -1.0);
+}
+
+M terrazzo(vec2 uv){
+  float n = fbm(uv * gS, gSP);
+  vec3 c = vor(uv * gS * 4.0, gSP * 4, 0.0);
+  float hi = fbm(uv * gS * 8.0 + 2.0, gSP * 8);
+  float rad = 0.3 + 0.25 * fract(c.z * 17.0);
+  if (c.z > 1.0 - uAux && c.x + hi * 0.08 < rad)
+    return M(0.56, 0.12 + 0.38 * fract(c.z * 53.0), step(0.5, fract(c.z * 31.0)));
+  return M(0.5, 0.75 + 0.08 * n, 0.0);
+}
+
+M rock(vec2 uv){ // rough base with craters
+  float n = fbm(uv * gS, gSP);
+  vec3 c = vor(uv * gS * 3.0, gSP * 3, 0.0);
+  float rad = 0.2 + 0.25 * fract(c.z * 13.0);
+  float pit = c.z > 1.0 - uAux * 0.7 ? 1.0 - smoothstep(rad * 0.5, rad, c.x) : 0.0;
+  return M(0.5 + 0.3 * n - pit * 0.5, 0.5 + 0.28 * n - pit * 0.15, -1.0);
+}
+
+M bark(vec2 uv){ // vertical plates split by furrows
+  float w = fbm(uv * gS + 3.7, gSP);
+  float n = nsum(vec2(uv.x * gS * 6.0 + w * 0.6, uv.y * gS), ivec2(uScale * 6, uScale), false, 3);
+  float fine = fbm(vec2(uv.x * gS * 12.0, uv.y * gS * 3.0), ivec2(uScale * 12, uScale * 3));
+  float plate = smoothstep(0.02, 0.1 * uAux + 0.06, abs(n));
+  return M(plate * (0.6 + 0.3 * n) + 0.1 * fine, 0.15 + 0.35 * plate + 0.25 * n + 0.2 * fine, -1.0);
+}
+
+// style 0 puffy, 1 wispy (stretched sideways), 2 night (thin clouds over stars)
+M clouds(vec2 uv){
+  if (uStyle == 3){ // overcast: soft horizontal streaks, no cloud edges
+    vec2 q = (uv + vec2(fract(gF * gph), 0.0)) * vec2(gS, gS * 3.0);
+    ivec2 per = ivec2(uScale, uScale * 3);
+    vec2 w = vec2(fbm(q + 5.2, per), fbm(q + 1.3, per));
+    float n = fbm(q + w * 0.6, per);
+    return M(0.5 + 0.2 * n, 0.5 + uAux * 0.9 * n, -1.0);
+  }
+  if (uStyle == 4){ // sky backdrop: palette runs top to bottom, tiles sideways only
+    vec2 q = (uv + vec2(fract(gF * gph), 0.0)) * vec2(gS, gS * 4.0);
+    ivec2 per = ivec2(uScale, uScale * 4);
+    float n = fbm(q, per), n2 = fbm(q * vec2(2.0, 1.0) + 3.3, ivec2(uScale * 2, uScale * 4));
+    float y = 1.0 - uv.y;
+    float t = y + uAux * 0.12 * (n + 0.5 * n2) * (1.0 - 0.6 * y);
+    // clouds whiten the upper sky; the sun glows near the horizon, fading out before the side edges
+    float cloud = smoothstep(0.05, 0.45, n) * (1.0 - y) * uVar * 0.6;
+    float sun = float(uCols) / 10.0 * (1.0 - smoothstep(0.0, 0.45, length(vec2((uv.x - 0.5) * 1.1, (y - 0.9) * 3.5))));
+    gGlow = clamp(max(cloud, sun), 0.0, 1.0);
+    return M(0.5, clamp(t, 0.0, 1.0), -1.0);
+  }
+  vec2 sc = uStyle == 1 ? vec2(1.0, 3.0) : vec2(1.0);
+  ivec2 per = ivec2(uScale, uStyle == 1 ? uScale * 3 : uScale);
+  vec2 q = (uv + vec2(fract(gF * gph), 0.0)) * gS * sc;
+  vec2 w = vec2(fbm(q + 5.2, per), fbm(q + 1.3, per));
+  float d = 0.5 + 0.7 * fbm(q + w * 0.8, per) + 0.15 * (turb(q * 2.0 + 3.1, per * 2) - 0.3);
+  float edge = 0.5 + (0.5 - uAux) * 0.6;
+  float c = smoothstep(edge - 0.06, edge + 0.1, d);
+  float sky = 0.12 + 0.06 * fbm(uv * 2.0 + 9.9, ivec2(2));
+  float t = mix(sky, 0.62 + 0.38 * smoothstep(edge, edge + 0.3, d), c);
+  if (uStyle == 2){
+    float st = rnd3(ivec3(gPx, 41)).x;
+    float tw = gE > 0.0 ? 0.6 + 0.4 * sin(6.2831853 * (fract(geph * gE) + st * 97.0)) : 1.0;
+    if (st > 0.985 && c < 0.5) t = max(t, (0.6 + (st - 0.985) * 25.0) * tw);
+  }
+  // height ramps up gently from the cloud edge so the sky itself stays unshaded
+  return M(smoothstep(edge - 0.04, edge + 0.4, d), t, c);
+}
+
+// rock face: warped noise masses, optional ledges (strata), ridge cracks, fine grit
+M cliff(vec2 uv){
+  vec2 q = uv * gS;
+  vec2 w = vec2(fbm(q + 4.1, gSP), fbm(q + 8.3, gSP));
+  // smooth masses drive the lighting; full-detail noise only colors the surface
+  float big = nsum(q + w * 0.7, gSP, false, 3);
+  float n = fbm(q + w * 0.7, gSP);
+  float r = 1.0 - abs(nsum(q * 2.0 + 1.9, gSP * 2, false, 3));
+  float fine = nsum(q * 6.0 + 7.7, gSP * 6, false, 2);
+  float h = 0.5 + 0.45 * big, band = 0.5;
+  int L = int(floor(uAux));
+  if (L > 0){
+    // each stratum is a slab that slopes up, then drops sharply at its lower edge
+    float y = uv.y * float(L) + 0.37 + 0.32 * big + 0.12 * w.x;
+    float f = fract(y);
+    band = rnd3(ivec3(wrap1(int(floor(y)), L), 0, 51)).x;
+    h += 0.45 * smoothstep(0.0, 0.75, f) - 0.22;
+  }
+  // cracks only where a second noise allows, so they read as fissures, not contours
+  float crack = smoothstep(0.92, 0.99, r) * smoothstep(0.05, 0.3, nsum(q + 3.3, gSP, false, 2));
+  h -= 0.25 * crack;
+  float t = 0.52 + 0.25 * n + 0.08 * fine + uVar * 0.22 * (band - 0.5) - 0.25 * crack;
+  return M(h, t, -1.0);
+}
+
+M material(vec2 uv){
+  if (uMat == 0) return stone(uv);
+  if (uMat == 1) return brick(uv);
+  if (uMat == 2) return tiles(uv);
+  if (uMat == 3) return dirt(uv);
+  if (uMat == 4) return grass(uv);
+  if (uMat == 5) return water(uv);
+  if (uMat == 6) return lava(uv);
+  if (uMat == 7) return fire(uv);
+  if (uMat == 8) return wood(uv);
+  if (uMat == 9) return plaster(uv);
+  if (uMat == 10) return marble(uv);
+  if (uMat == 11) return terrazzo(uv);
+  if (uMat == 12) return rock(uv);
+  if (uMat == 13) return bark(uv);
+  if (uMat == 15) return cliff(uv);
+  return clouds(uv);
+}
+
+M evalAt(ivec2 px){
+  px = ivec2(wrap1(px.x, uN), wrap1(px.y, uN));
+  if (uRotate == 1) px = px.yx;
+  gPx = px; gGlow = 0.0;
+  vec2 uv = (vec2(px) + 0.5) / gN;
+  if (uWarp > 0.0) uv += vec2(fbm(uv * gS + vec2(5.2, 1.3), gSP), fbm(uv * gS + vec2(1.7, 9.2), gSP)) * uWarp * 0.12;
+  return material(uv);
+}
+
+float lum(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+void main(){
+  ivec2 px = ivec2(gl_FragCoord.xy);
+  gN = float(uN); gS = float(uScale); gSP = ivec2(uScale);
+  gph = uPhase; geph = uEvolvePhase; gE = float(uEvolve); giE = uEvolve; gz = geph * gE; gF = float(uFlow);
+
+  M a = evalAt(px);
+  float glow = gGlow;
+  float t = (a.t - 0.5) * uContrast + 0.5 + uBright;
+  if (uLight > 0.0){
+    M bx = evalAt(px + ivec2(1, 0)), by = evalAt(px + ivec2(0, 1));
+    vec3 n = normalize(vec3(-vec2(bx.h - a.h, by.h - a.h) * uBump * 4.0, 1.0));
+    vec3 L = normalize(vec3(cos(uAngle), sin(uAngle), 1.0));
+    t += (dot(n, L) - L.z) * uLight * 1.5;
+  }
+  t = clamp(t + (rnd3(ivec3(px, 77)).x - 0.5) * uGrain, 0.0, 1.0);
+
+  float bay = bayer4(px) - 0.5;
+  int pn = uPalN; vec3 col;
+  if (uRamp == 0){
+    int idx = clamp(int(floor((t + bay * uDither / float(pn)) * float(pn))), 0, pn - 1);
+    if (uCycle != 0) idx = wrap1(idx + int(floor(gph * float(uCycle * pn))), pn);
+    col = uPal[idx];
+  } else {
+    float x = t * float(pn - 1);
+    if (uCycle != 0) x = mod(x + fract(gph * float(uCycle)) * float(pn), float(pn));
+    int i = int(floor(x));
+    col = mix(uPal[wrap1(i, pn)], uPal[wrap1(i + 1, pn)], fract(x));
+  }
+
+  float m = a.m;
+  if (m < 0.0){
+    vec2 uv = (vec2(px) + 0.5) / gN;
+    m = clamp(0.5 + 0.9 * fbm(uv * float(uTintScale) + 11.1, ivec2(uTintScale)), 0.0, 1.0);
+  }
+  vec3 tinted = clamp(uTint * lum(col) / max(lum(uTint), 0.001), 0.0, 1.0);
+  col = mix(col, tinted, clamp(m, 0.0, 1.0) * uTintAmt);
+
+  col = mix(col, vec3(1.0), glow);
+  if (uFifteen == 1) col = clamp(floor(col * 31.0 + 0.5 + (uRamp == 1 ? bay * uDither : 0.0)) / 31.0, 0.0, 1.0);
+  // alpha carries height so the overlay pass can favor tops or cracks
+  outCol = vec4(col, clamp(a.h, 0.0, 1.0));
+}`;
+
+// Pass 1b: lay a second material over the base through a periodic noise mask.
+// Mode 0 patches, 1 on high areas (moss on stone tops), 2 in low areas (grass in cracks).
+const COMP = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uBase, uOver;
+uniform int uN, uHasOver, uMode, uMaskScale, uSeed, uEvolve;
+uniform float uCover, uEdge, uShadow, uAngle, uEvolvePhase;
+out vec4 outCol;
+${COMMON}
+
+// value noise periodic in x, y (tile) and z (loop time, uEvolve cycles)
+float hv(ivec3 c, ivec3 per){
+  c = ((c % per) + per) % per;
+  return float(pcg3d(uvec3(c) + uvec3(0u, 0u, uint(uSeed) * 977u + 500u)).x) / 4294967295.0;
+}
+float vn(vec3 p, ivec3 per){
+  ivec3 i = ivec3(floor(p)); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  #define H(x, y, z) hv(i + ivec3(x, y, z), per)
+  return mix(mix(mix(H(0,0,0), H(1,0,0), f.x), mix(H(0,1,0), H(1,1,0), f.x), f.y),
+             mix(mix(H(0,0,1), H(1,0,1), f.x), mix(H(0,1,1), H(1,1,1), f.x), f.y), f.z);
+}
+float covered(ivec2 px){
+  px = ((px % uN) + uN) % uN;
+  vec3 p = vec3((vec2(px) + 0.5) / float(uN) * float(uMaskScale), uEvolvePhase * float(uEvolve));
+  ivec3 per = ivec3(uMaskScale, uMaskScale, max(uEvolve, 1));
+  float s = 0.0, a = 0.5, n = 0.0;
+  for (int o = 0; o < 5; o++){ s += a * vn(p, per); n += a; p *= 2.0; per *= 2; a *= 0.5; }
+  float m = 0.5 + (s / n - 0.5) * 2.2;
+  float h = texelFetch(uBase, px, 0).a;
+  if (uMode == 1) m += (h - 0.6) * 0.9;
+  if (uMode == 2) m -= (h - 0.5) * 1.2;
+  return step(1.0 - uCover, m + (bayer4(px) - 0.5) * uEdge);
+}
+void main(){
+  ivec2 px = ivec2(gl_FragCoord.xy);
+  vec3 col = texelFetch(uBase, px, 0).rgb;
+  if (uHasOver == 1){
+    if (covered(px) > 0.5) col = texelFetch(uOver, px, 0).rgb;
+    else if (covered(px + ivec2(round(cos(uAngle)), round(sin(uAngle)))) > 0.5) col *= 1.0 - uShadow;
+  }
+  outCol = vec4(col, 1.0);
+}`;
+
+// Pass 2: tile it across the low-res frame with console-style sampling.
+const DISP = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uTile, uSky;
+uniform int uN, uFilter, uView, uOut15, uOutDither, uSkyMode, uSkyN;
+uniform vec2 uRes, uScroll;
+uniform float uPitch, uHeight, uFog, uGrid, uShade, uShadeSize, uShadeTintAmt;
+uniform vec2 uTiles, uDensity;
+uniform vec3 uFogCol, uShadeTint;
+out vec4 outCol;
+${COMMON}
+
+// Gouraud-style vertex lighting: random brightness and tint per vertex of a coarse
+// world grid, interpolated linearly across each triangle.
+vec2 vtx(ivec2 c){ return vec2(pcg3d(uvec3(uvec2(c), 7u)).xy) / 4294967295.0; }
+vec2 gouraud(vec2 w){
+  vec2 g = w / uShadeSize, f = fract(g); ivec2 i = ivec2(floor(g));
+  vec2 a = vtx(i), b = vtx(i + ivec2(1,0)), c = vtx(i + ivec2(0,1)), d = vtx(i + ivec2(1,1));
+  return f.x + f.y < 1.0 ? a + f.x * (b - a) + f.y * (c - a) : d + (1.0 - f.x) * (c - d) + (1.0 - f.y) * (b - d);
+}
+
+// clampY keeps sky backdrops from wrapping their top into their horizon
+vec3 fetchT(sampler2D s, int n, ivec2 t, bool clampY){
+  t.x = ((t.x % n) + n) % n;
+  t.y = clampY ? clamp(t.y, 0, n - 1) : ((t.y % n) + n) % n;
+  return texelFetch(s, t, 0).rgb;
+}
+vec3 sampT(sampler2D s, int n, vec2 uv, bool cy){
+  vec2 t = uv * float(n);
+  if (uFilter == 0) return fetchT(s, n, ivec2(floor(t)), cy);
+  t -= 0.5; ivec2 i = ivec2(floor(t)); vec2 f = fract(t);
+  vec3 a = fetchT(s, n, i, cy), b = fetchT(s, n, i + ivec2(1,0), cy), c = fetchT(s, n, i + ivec2(0,1), cy), d = fetchT(s, n, i + ivec2(1,1), cy);
+  if (uFilter == 2) return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  // N64 three-point filter
+  if (f.x + f.y <= 1.0) return a + f.x * (b - a) + f.y * (c - a);
+  return d + (1.0 - f.x) * (c - d) + (1.0 - f.y) * (b - d);
+}
+vec3 samp(vec2 uv){ return sampT(uTile, uN, uv, false); }
+vec3 rayDir(vec2 frag){
+  vec2 ndc = (frag - 0.5 * uRes) / uRes.y;
+  vec3 rd = normalize(vec3(ndc, 1.2));
+  float cp = cos(uPitch), sp = sin(uPitch);
+  return vec3(rd.x, rd.y * cp - rd.z * sp, rd.y * sp + rd.z * cp);
+}
+// Backdrop skies wrap twice around the view (centered straight ahead) and climb ~26° above the horizon.
+vec3 domeAt(vec3 rd, float v){ return sampT(uSky, uSkyN, vec2(atan(rd.x, rd.z) / 3.14159265 + 0.5, v), true); }
+vec3 skyCol(vec3 rd){
+  if (uSkyMode == 1){ // tileable clouds on a flat layer overhead, fading into fog
+    float y = max(rd.y, 0.002), t = 4.0 / y;
+    vec3 c = sampT(uSky, uSkyN, rd.xz * t * 0.08, false);
+    return mix(c, uFogCol, 1.0 - exp(-t * (uFog + 0.15) * 0.03));
+  }
+  return domeAt(rd, clamp(asin(clamp(rd.y, 0.0, 1.0)) / 0.45, 0.0, 1.0));
+}
+bool floorUV(vec2 frag, out vec2 uv, out float dist){
+  vec3 rd = rayDir(frag);
+  if (rd.y >= -0.002){ uv = vec2(0); dist = 1e4; return false; }
+  dist = min(uHeight / -rd.y, 80.0);
+  uv = (rd * dist).xz * uDensity;
+  return true;
+}
+void main(){
+  vec2 frag = gl_FragCoord.xy;
+  vec2 uv; float dist = 0.0; bool ok = true;
+  if (uView == 0){
+    uv = frag / uRes * uTiles;
+  } else if (uView == 1){
+    ok = floorUV(frag, uv, dist);
+  } else {
+    // PS1 affine mapping: perspective-correct only at triangle corners, linear inside
+    vec2 g = frag / uGrid, c = floor(g), f = fract(g);
+    vec2 p0, p1, p2, w;
+    if (f.x + f.y < 1.0){ p0 = c; p1 = c + vec2(1,0); p2 = c + vec2(0,1); w = f; }
+    else { p0 = c + 1.0; p1 = c + vec2(0,1); p2 = c + vec2(1,0); w = 1.0 - f; }
+    vec2 u0, u1, u2; float d0, d1, d2;
+    bool k0 = floorUV(p0 * uGrid, u0, d0), k1 = floorUV(p1 * uGrid, u1, d1), k2 = floorUV(p2 * uGrid, u2, d2);
+    if (k0 && k1 && k2){ uv = u0 + w.x * (u1 - u0) + w.y * (u2 - u0); dist = d0 + w.x * (d1 - d0) + w.y * (d2 - d0); }
+    else ok = floorUV(frag, uv, dist);
+  }
+  vec3 fogC = uFogCol, rd = rayDir(frag);
+  // with a backdrop sky the floor fades into the sky's own horizon color
+  if (uView > 0 && uSkyMode == 2){
+    // average a few horizon samples so the fog doesn't pick up per-pixel streaks
+    fogC = vec3(0.0);
+    for (int i = -2; i <= 2; i++){
+      float a = 0.08 * float(i);
+      fogC += domeAt(vec3(rd.x * cos(a) + rd.z * sin(a), 0.0, rd.z * cos(a) - rd.x * sin(a)), 0.02);
+    }
+    fogC /= 5.0;
+  }
+  vec3 col = (uView > 0 && uSkyMode > 0) ? skyCol(rd) : fogC;
+  if (ok){
+    col = samp(uv + uScroll);
+    if (uShade > 0.0 || uShadeTintAmt > 0.0){
+      vec2 v = gouraud(uv);
+      col *= 1.0 + (v.x - 0.5) * 2.0 * uShade;
+      col = mix(col, col * uShadeTint * 1.6, v.y * uShadeTintAmt);
+      col = clamp(col, 0.0, 1.0);
+    }
+    if (uView > 0) col = mix(col, fogC, 1.0 - exp(-dist * uFog * 0.12));
+  }
+  if (uOut15 == 1){
+    float d = uOutDither == 1 ? bayer4(ivec2(frag)) - 0.5 : 0.0;
+    col = clamp(floor(col * 31.0 + 0.5 + d) / 31.0, 0.0, 1.0);
+  }
+  outCol = vec4(col, 1.0);
+}`;
+
+// Pass 3: nearest-neighbor upscale to the canvas
+const BLIT = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uDst;
+out vec4 outCol;
+void main(){
+  ivec2 s = textureSize(uSrc, 0);
+  outCol = texelFetch(uSrc, ivec2(floor(gl_FragCoord.xy / uDst * vec2(s))), 0);
+}`;
+
+// ---------------------------------------------------------------------------
+// Materials and state
+// ---------------------------------------------------------------------------
+// Presets share shader materials (id) and differ in style, settings and palette.
+// aux: [label, min, max, step]; rows / cols: [label, min, max, step] or omitted to hide.
+const MAT_DEFAULTS = {
+  style: 0, rotate: false, scale: 4, oct: 4, gain: 0.5, warp: 0.1, vary: 1, aux: 1, rows: 8, cols: 4,
+  contrast: 1.1, bright: 0, dither: 0.5, grain: 0.06, ramp: 1,
+  light: 0.6, bump: 1, angle: 135, tint: '#ffffff', tintAmt: 0, tintScale: 2,
+  evolve: 0, flow: 0, cycle: 0,
+};
+const MATS = {
+  cobble: { name: 'Cobblestone', id: 0, aux: ['Crack width', 0.5, 4, 0.5],
+    p: { scale: 4, aux: 1.5, light: 0.7, bump: 1.5 },
+    pal: ['#141418', '#2a292f', '#403e45', '#57545b', '#6f6a70', '#888287', '#a39d9f', '#bdb8b6'] },
+  brick: { name: 'Red brick', id: 1, aux: ['Mortar width', 1, 4, 1], rows: ['Rows', 2, 16, 2], cols: ['Bricks per row', 1, 8, 1],
+    p: { scale: 6, oct: 3, rows: 8, cols: 4, aux: 2, light: 0.7, bump: 1.5, tint: '#d08a50', tintAmt: 0.3 },
+    pal: ['#2b2724', '#4d4842', '#4a2016', '#64291b', '#7c3523', '#94452c', '#ab5a3a', '#c4774f'] },
+  blocks: { name: 'Stone blocks', id: 1, aux: ['Mortar width', 1, 4, 1], rows: ['Rows', 2, 16, 2], cols: ['Blocks per row', 1, 8, 1],
+    p: { scale: 6, rows: 6, cols: 3, aux: 2, light: 0.8, bump: 1.6, grain: 0.1, contrast: 1.2 },
+    pal: ['#1c1c22', '#2c2d34', '#3d3f47', '#50525b', '#64666f', '#7a7c84', '#92939a', '#aeaeb3'] },
+  checker: { name: 'Checker tiles', id: 2, aux: ['Grout width', 0, 3, 0.5], rows: ['Rows', 2, 16, 2], cols: ['Columns', 2, 16, 2],
+    p: { style: 0, scale: 3, rows: 4, cols: 4, aux: 1, vary: 0.4, light: 0.6, bump: 1.2, grain: 0.04 },
+    pal: ['#121212', '#262628', '#46464a', '#8d8a84', '#c9c4b8', '#e8e3d6'] },
+  flagstone: { name: 'Flagstone', id: 2, aux: ['Grout width', 0, 3, 0.5], rows: ['Rows', 1, 12, 1], cols: ['Slabs per row', 1, 8, 1],
+    p: { style: 1, scale: 3, rows: 4, cols: 2, aux: 1.5, light: 0.7, bump: 1.4, grain: 0.08 },
+    pal: ['#3a362f', '#6d685e', '#8c877b', '#a6a195', '#bdb8ac', '#d2cec3', '#e6e2d8'] },
+  dirt: { name: 'Dirt', id: 3, aux: ['Pebbles', 0, 1, 0.05],
+    p: { scale: 4, oct: 5, gain: 0.55, warp: 0.2, aux: 0.5, grain: 0.12, light: 0.5 },
+    pal: ['#22170e', '#362416', '#4b321f', '#5f4029', '#744f33', '#8a6141', '#a17853'] },
+  granite: { name: 'Granite', id: 3, aux: ['Pebbles', 0, 1, 0.05],
+    p: { scale: 6, oct: 6, gain: 0.6, aux: 0.1, grain: 0.3, light: 0.3, contrast: 1.0 },
+    pal: ['#1d1d22', '#3a3a41', '#55555d', '#6e6d74', '#88868b', '#a3a0a3', '#c1bebe'] },
+  rock: { name: 'Pitted rock', id: 12, aux: ['Pits', 0, 1, 0.05],
+    p: { scale: 3, oct: 5, aux: 0.5, grain: 0.15, light: 0.8, bump: 1.5 },
+    pal: ['#1e1a24', '#332d3b', '#4a4352', '#615a69', '#787181', '#918a99', '#aba5b2'] },
+  cliff: { name: 'Cliff face', id: 15, aux: ['Ledges', 0, 16, 1],
+    p: { scale: 3, oct: 5, gain: 0.55, warp: 0.1, aux: 4, light: 0.8, bump: 1.4, grain: 0.06, contrast: 1.1 },
+    pal: ['#2a2622', '#433d36', '#5c544a', '#756b5e', '#8e8373', '#a69b89', '#bdb3a1', '#d4ccbc'] },
+  mountain: { name: 'Mountain rock', id: 15, aux: ['Ledges', 0, 16, 1],
+    p: { scale: 3, oct: 6, gain: 0.55, warp: 0.3, aux: 0, light: 1, bump: 2.6, grain: 0.08, contrast: 1.15 },
+    pal: ['#1c1f25', '#2c3038', '#3e434c', '#525862', '#686e77', '#7f858d', '#989da3', '#b4b8bc'] },
+  sandstone: { name: 'Sandstone', id: 15, aux: ['Ledges', 0, 16, 1],
+    p: { scale: 3, oct: 5, gain: 0.5, warp: 0.05, aux: 6, vary: 1.6, light: 0.8, bump: 1.4, grain: 0.06 },
+    pal: ['#3a1a10', '#5a2a18', '#7a3c22', '#984e2c', '#b06238', '#c47a4a', '#d6955f', '#e6b47e'] },
+  grass: { name: 'Grass', id: 4, aux: ['Specks', 0, 1, 0.05],
+    p: { style: 1, scale: 2, oct: 3, aux: 0.5, light: 0, grain: 0, dither: 0, contrast: 1, tint: '#b8f040', tintAmt: 0 },
+    pal: ['#008400', '#009400', '#009c00', '#00a510', '#00ad18', '#00bd18', '#00c631', '#21de4a', '#52ff84'] },
+  jungle: { name: 'Jungle grass', id: 4, aux: ['Blades', 0, 1, 0.05],
+    p: { scale: 3, aux: 0.5, light: 0.7, bump: 1.2, grain: 0.1, tint: '#d8e040', tintAmt: 0.35 },
+    pal: ['#0e2008', '#1a3a0c', '#2a5512', '#3d7018', '#558a1e', '#74a52a', '#9cc03c', '#c8dc5a'] },
+  moss: { name: 'Moss', id: 4, aux: ['Blades', 0, 1, 0.05],
+    p: { scale: 5, aux: 0, light: 0.8, bump: 1.5, grain: 0.15, tint: '#a0c030', tintAmt: 0.25 },
+    pal: ['#13200a', '#22370f', '#344f15', '#486a1c', '#5f8424', '#7a9e30', '#9cb848'] },
+  water: { name: 'Water', id: 5, aux: ['Highlights', 0, 1, 0.05],
+    p: { scale: 3, oct: 3, warp: 0.3, aux: 0.7, light: 0.35, bump: 0.8, grain: 0.03, evolve: 1, flow: 1 },
+    pal: ['#0b3a4a', '#0f5566', '#147080', '#1c8c99', '#2aa8b0', '#4cc4c6', '#8ae0dc', '#e8fbf8'] },
+  lava: { name: 'Lava', id: 6, aux: ['Crack glow', 0.02, 0.4, 0.01],
+    p: { scale: 3, warp: 0.4, aux: 0.12, light: 0.5, grain: 0.05, evolve: 1, flow: 1 },
+    pal: ['#120404', '#2a0806', '#401009', '#6b1405', '#b02a06', '#e0560c', '#ff9a22', '#ffe08a'] },
+  fire: { name: 'Fire', id: 7, aux: ['Fade to top', 0, 1, 0.05],
+    p: { scale: 4, warp: 0.3, aux: 0, light: 0, contrast: 1.4, grain: 0.04, evolve: 1, flow: 2 },
+    pal: ['#000000', '#2a0500', '#6a1200', '#b02c00', '#e05a00', '#f89000', '#ffc630', '#fff6c0'] },
+  clouds: { name: 'Clouds', id: 14, aux: ['Cloud cover', 0.1, 0.9, 0.01],
+    p: { style: 0, scale: 2, oct: 5, warp: 0.1, aux: 0.45, light: 0.5, bump: 1.2, grain: 0.02, evolve: 1, flow: 1 },
+    pal: ['#2a5aa8', '#3a6cbc', '#4f82cc', '#6a9ad8', '#8fb4e2', '#b8d0ec', '#dce8f6', '#ffffff'] },
+  wispy: { name: 'Wispy clouds', id: 14, aux: ['Cloud cover', 0.1, 0.9, 0.01],
+    p: { style: 1, scale: 2, oct: 5, warp: 0.2, aux: 0.4, light: 0.3, bump: 1, grain: 0.02, evolve: 1, flow: 1 },
+    pal: ['#3466b4', '#4576c2', '#5a8ad0', '#76a2dc', '#98bce6', '#bcd4f0', '#e0ecf8', '#ffffff'] },
+  sunset: { name: 'Sunset clouds', id: 14, aux: ['Cloud cover', 0.1, 0.9, 0.01],
+    p: { style: 0, scale: 2, oct: 5, warp: 0.15, aux: 0.5, light: 0.6, bump: 1.2, angle: 200, grain: 0.03, evolve: 1, flow: 1 },
+    pal: ['#2a1a4a', '#4a2a6a', '#7a3a7a', '#b04a6a', '#e0705a', '#f5a060', '#ffd090', '#fff0d0'] },
+  storm: { name: 'Storm clouds', id: 14, aux: ['Cloud cover', 0.1, 0.9, 0.01],
+    p: { style: 0, scale: 3, oct: 6, warp: 0.3, aux: 0.7, light: 0.45, bump: 1.2, contrast: 1.1, grain: 0.05, evolve: 1, flow: 2 },
+    pal: ['#14161c', '#22252e', '#323641', '#454a55', '#5a606a', '#727880', '#8e9399'] },
+  night: { name: 'Night sky', id: 14, aux: ['Cloud cover', 0.1, 0.9, 0.01],
+    p: { style: 2, scale: 3, oct: 5, warp: 0.1, aux: 0.3, light: 0.3, bump: 1, grain: 0.02, evolve: 1, flow: 1 },
+    pal: ['#04060f', '#0a1022', '#141c36', '#22304e', '#3a4a68', '#6a7a98', '#b0bcd8', '#ffffff'] },
+  overcast: { name: 'Overcast', id: 14, aux: ['Streak contrast', 0, 1, 0.01],
+    p: { style: 3, scale: 2, oct: 5, gain: 0.55, warp: 0.2, aux: 0.5, light: 0, grain: 0.03, evolve: 1, flow: 1 },
+    pal: ['#5e5e62', '#747478', '#8a8a8e', '#a0a0a4', '#b6b6ba', '#cacace', '#dededf', '#ececee'] },
+  skysunset: { name: 'Sky backdrop: sunset', id: 14, aux: ['Streaks', 0, 1, 0.01], cols: ['Sun glow', 0, 10, 1],
+    p: { style: 4, scale: 2, oct: 5, warp: 0.1, aux: 0.6, cols: 0, vary: 1, light: 0, grain: 0.03, contrast: 1, flow: 1, evolve: 1 },
+    pal: ['#f4f2f8', '#dcd2e4', '#c8b8d6', '#baa6c8', '#b29cb8', '#b89aa8', '#cfa898', '#ecc89a', '#a07a88', '#ece6ee'] },
+  skydusk: { name: 'Sky backdrop: dusk', id: 14, aux: ['Streaks', 0, 1, 0.01], cols: ['Sun glow', 0, 10, 1],
+    p: { style: 4, scale: 2, oct: 5, warp: 0.1, aux: 0.5, cols: 8, vary: 1.2, light: 0, grain: 0.03, contrast: 1, flow: 1, evolve: 1 },
+    pal: ['#56589e', '#6a6cb4', '#8082c8', '#9a98d8', '#b4ace2', '#ccbfe6', '#e2d0dc', '#f6e2c8', '#fff2dc'] },
+  magma: { name: 'Magma', id: 6, aux: ['Vein width', 0.05, 0.6, 0.01],
+    p: { style: 1, scale: 4, oct: 5, gain: 0.55, warp: 0.2, aux: 0.3, light: 0.5, bump: 1, grain: 0.04, contrast: 1.1, evolve: 1, flow: 1 },
+    pal: ['#100000', '#300000', '#540200', '#7c0600', '#a40c00', '#c81400', '#e42808', '#f84a20'] },
+  mossywall: { name: 'Mossy stone wall', id: 2, aux: ['Gap width', 1, 5, 0.5], rows: ['Rows', 2, 12, 1], cols: ['Stones per row', 1, 8, 1],
+    p: { N: 128, style: 2, scale: 3, oct: 5, rows: 4, cols: 3, aux: 1, vary: 1.6, light: 1, bump: 2.2, grain: 0.1, contrast: 1.15, tint: '#6a88a8', tintAmt: 0.35, tintScale: 3 },
+    pal: ['#0a0c03', '#1c2207', '#30360d', '#464d14', '#5e651c', '#767e25', '#909a34', '#b0b64c'] },
+  tealwater: { name: 'Deep water', id: 5, aux: ['Highlights', 0, 1, 0.05],
+    p: { scale: 3, oct: 3, warp: 0.45, aux: 0.55, vary: 2.2, light: 0, grain: 0.02, evolve: 1, flow: 1 },
+    pal: ['#0a2628', '#0e3436', '#134244', '#1a5252', '#246462', '#337872', '#4a8e86', '#6aaa9e'] },
+  woodgrain: { name: 'Wood grain', id: 8, aux: ['Rings', 2, 24, 1],
+    p: { style: 0, scale: 2, aux: 9, cols: 1, light: 0.4, bump: 0.6 },
+    pal: ['#1e1209', '#33200f', '#4a2f16', '#5f3d1e', '#754e28', '#8b6033', '#a37641', '#b98c52'] },
+  planks: { name: 'Planks', id: 8, aux: ['Rings', 2, 24, 1], cols: ['Boards', 1, 8, 1],
+    p: { style: 1, scale: 2, aux: 6, cols: 4, light: 0.6, bump: 1.2 },
+    pal: ['#2a120a', '#47200f', '#622c15', '#7a3a1d', '#904a26', '#a65c32', '#bb7240'] },
+  logs: { name: 'Logs', id: 8, aux: ['Rings', 2, 24, 1], cols: ['Logs', 1, 12, 1],
+    p: { style: 2, rotate: true, scale: 2, aux: 5, cols: 6, light: 0.8, bump: 2 },
+    pal: ['#2a1206', '#4d230c', '#753814', '#9a4e1e', '#b8662a', '#d0803a', '#e29d55'] },
+  bark: { name: 'Bark', id: 13, aux: ['Furrow depth', 0.1, 1, 0.05],
+    p: { scale: 3, aux: 0.5, light: 0.8, bump: 1.6, contrast: 1.2, tint: '#5a8a24', tintAmt: 0.3 },
+    pal: ['#140d07', '#2a1c10', '#3f2c19', '#544023', '#6a542f', '#80683d', '#977e4e'] },
+  plaster: { name: 'Cracked plaster', id: 9, aux: ['Crack width', 0, 1, 0.05],
+    p: { scale: 3, oct: 5, aux: 0.4, light: 0.6, bump: 1.2, tint: '#b04a30', tintAmt: 0.8 },
+    pal: ['#8a7a5c', '#a8977a', '#c0b090', '#d2c4a4', '#e0d4b6', '#ece3c9'] },
+  marble: { name: 'Marble', id: 10, aux: ['Vein sharpness', 1, 12, 0.5], cols: ['Veins', 1, 6, 1],
+    p: { scale: 2, oct: 5, warp: 0.2, aux: 4, cols: 2, light: 0.15, tint: '#40a0a0', tintAmt: 0.5 },
+    pal: ['#3d6a46', '#4f8458', '#64996a', '#7cad7f', '#97c196', '#b6d6b0', '#d6ead0'] },
+  terrazzo: { name: 'Terrazzo', id: 11, aux: ['Chips', 0, 1, 0.05],
+    p: { scale: 6, aux: 0.8, light: 0.3, grain: 0.08, tint: '#3f8a3a', tintAmt: 0.7 },
+    pal: ['#3a4038', '#5d665a', '#8a9286', '#b8beb0', '#d6dacc', '#ecefe4'] },
+};
+
+const S = {
+  mat: 'cobble', N: 64, seed: 7, fifteen: true, pal: [],
+  bpm: 120, beats: 8, frames: 0, scrollX: 0, scrollY: 0,
+  view: 0, filter: 0, repeat: 4, across: 0, pitch: 0.45, height: 1.0, grid: 48, fog: 0.4, fogCol: '#000000',
+  outRes: 240, out15: true, outDither: true,
+  overlay: 'none', ovCover: 0.4, ovScale: 3, ovMode: 0, ovEdge: 0.3, ovShadow: 0.3,
+  shade: 0, shadeSize: 2, shadeTint: '#ffd890', shadeTintAmt: 0, sky: 'none',
+};
+
+// Sky presets render at a fixed size: 128 for backdrops, 64 for cloud layers.
+function skySettings(){
+  const m = MATS[S.sky], back = m.p.style === 4;
+  return Object.assign({}, MAT_DEFAULTS, m.p, { mat: S.sky, pal: m.pal, N: back ? 128 : 64,
+    seed: (S.seed + 202) % 1000, fifteen: S.fifteen });
+}
+
+// The overlay renders with its own preset's settings, sharing tile size, seed and Evolve.
+function overlaySettings(){
+  const m = MATS[S.overlay];
+  return Object.assign({}, MAT_DEFAULTS, m.p, { mat: S.overlay, pal: m.pal, N: S.N, seed: (S.seed + 101) % 1000,
+    fifteen: S.fifteen, evolve: S.evolve });
+}
+
+function applyMaterial(key){
+  const m = MATS[key];
+  S.mat = key;
+  Object.assign(S, MAT_DEFAULTS, m.p);
+  S.pal = m.pal.slice();
+}
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const isFloor = () => S.view > 0;
+const UI = [
+  ['Material', [
+    { type: 'random' },
+    { k: 'mat', type: 'select', label: 'Material', opts: Object.entries(MATS).map(([k, m]) => [k, m.name]) },
+    { k: 'N', type: 'select', label: 'Tile size', num: true, opts: [[16, '16×16'], [32, '32×32'], [64, '64×64'], [128, '128×128']] },
+    { k: 'seed', type: 'range', label: 'Seed', min: 0, max: 999, step: 1 },
+  ]],
+  ['Shape', [
+    { k: 'scale', type: 'range', label: 'Scale (cells per tile)', min: 1, max: 12, step: 1 },
+    { k: 'oct', type: 'range', label: 'Detail (octaves)', min: 1, max: 7, step: 1 },
+    { k: 'gain', type: 'range', label: 'Roughness', min: 0.2, max: 0.85, step: 0.01 },
+    { k: 'warp', type: 'range', label: 'Warp', min: 0, max: 1.5, step: 0.01 },
+    { k: 'vary', type: 'range', label: 'Variation', min: 0, max: 2, step: 0.01 },
+    { k: 'aux', type: 'range', label: 'aux', min: 0, max: 1, step: 0.01, spec: 'aux' },
+    { k: 'rows', type: 'range', label: 'rows', min: 2, max: 16, step: 2, spec: 'rows' },
+    { k: 'cols', type: 'range', label: 'cols', min: 1, max: 8, step: 1, spec: 'cols' },
+    { k: 'rotate', type: 'check', label: 'Rotate 90°' },
+  ]],
+  ['Lighting', [
+    { k: 'light', type: 'range', label: 'Light strength', min: 0, max: 1.5, step: 0.01 },
+    { k: 'bump', type: 'range', label: 'Bump height', min: 0, max: 4, step: 0.05 },
+    { k: 'angle', type: 'range', label: 'Light direction (°)', min: 0, max: 360, step: 5 },
+  ]],
+  ['Color', [
+    { type: 'palette' },
+    { k: 'ramp', type: 'select', label: 'Palette mode', num: true, opts: [[1, 'Ramp (blended)'], [0, 'Indexed (hard steps)']] },
+    { k: 'contrast', type: 'range', label: 'Contrast', min: 0.3, max: 3, step: 0.01 },
+    { k: 'bright', type: 'range', label: 'Brightness', min: -0.5, max: 0.5, step: 0.01 },
+    { k: 'grain', type: 'range', label: 'Grain', min: 0, max: 0.5, step: 0.01 },
+    { k: 'dither', type: 'range', label: 'Ordered dither', min: 0, max: 1.5, step: 0.01 },
+    { k: 'tint', type: 'color', label: 'Tint color' },
+    { k: 'tintAmt', type: 'range', label: 'Tint amount', min: 0, max: 1, step: 0.01 },
+    { k: 'tintScale', type: 'range', label: 'Tint patch scale', min: 1, max: 8, step: 1 },
+    { k: 'fifteen', type: 'check', label: '15-bit color (5:5:5)' },
+  ]],
+  ['Overlay', [
+    { k: 'overlay', type: 'select', label: 'Overlay material', opts: [['none', 'None'], ...Object.entries(MATS).map(([k, m]) => [k, m.name])] },
+    { k: 'ovMode', type: 'select', label: 'Where it grows', num: true, opts: [[0, 'Patches'], [1, 'On high areas (tops)'], [2, 'In low areas (cracks)']], show: () => S.overlay !== 'none' },
+    { k: 'ovCover', type: 'range', label: 'Coverage', min: 0, max: 1, step: 0.01, show: () => S.overlay !== 'none' },
+    { k: 'ovScale', type: 'range', label: 'Patch scale', min: 1, max: 8, step: 1, show: () => S.overlay !== 'none' },
+    { k: 'ovEdge', type: 'range', label: 'Edge dither', min: 0, max: 0.8, step: 0.01, show: () => S.overlay !== 'none' },
+    { k: 'ovShadow', type: 'range', label: 'Edge shadow', min: 0, max: 0.8, step: 0.01, show: () => S.overlay !== 'none' },
+  ]],
+  ['Animation (loops)', [
+    { k: 'bpm', type: 'range', label: 'BPM', min: 60, max: 180, step: 1 },
+    { k: 'beats', type: 'select', label: 'Loop length', num: true, opts: [[1, '1 beat'], [2, '2 beats'], [4, '1 bar'], [8, '2 bars'], [16, '4 bars'], [32, '8 bars'], [64, '16 bars']] },
+    { k: 'frames', type: 'select', label: 'Frames per loop', num: true, opts: [[0, 'Smooth'], [4, '4 (choppy)'], [8, '8'], [12, '12'], [16, '16'], [24, '24'], [32, '32']] },
+    { k: 'evolve', type: 'range', label: 'Evolve (noise cycles)', min: 0, max: 4, step: 1 },
+    { k: 'flow', type: 'range', label: 'Flow (water / lava / fire / sky)', min: -4, max: 4, step: 1, show: () => [5, 6, 7, 14].includes(MATS[S.mat].id) },
+    { k: 'cycle', type: 'range', label: 'Palette cycle', min: -4, max: 4, step: 1 },
+    { k: 'scrollX', type: 'range', label: 'Scroll X (tiles / loop)', min: -8, max: 8, step: 1 },
+    { k: 'scrollY', type: 'range', label: 'Scroll Y (tiles / loop)', min: -8, max: 8, step: 1 },
+  ]],
+  ['Display', [
+    { k: 'view', type: 'select', label: 'View', num: true, opts: [[0, 'Flat wall'], [1, 'Floor (perspective)'], [2, 'Floor (PS1 affine)']] },
+    { k: 'filter', type: 'select', label: 'Texture filter', num: true, opts: [[0, 'Nearest (PS1)'], [1, '3-point (N64)'], [2, 'Bilinear']] },
+    { k: 'repeat', type: 'range', label: 'Tiles down', min: 0.25, max: 32, step: 0.25 },
+    { k: 'across', type: 'range', label: 'Tiles across (0 = square tiles)', min: 0, max: 64, step: 0.25 },
+    { k: 'pitch', type: 'range', label: 'Camera pitch', min: 0.1, max: 1.4, step: 0.01, show: isFloor },
+    { k: 'height', type: 'range', label: 'Camera height', min: 0.2, max: 4, step: 0.05, show: isFloor },
+    { k: 'grid', type: 'range', label: 'Affine triangle size (px)', min: 8, max: 120, step: 1, show: () => S.view === 2 },
+    { k: 'fog', type: 'range', label: 'Fog', min: 0, max: 2, step: 0.01, show: isFloor },
+    { k: 'fogCol', type: 'color', label: 'Fog / sky color', show: isFloor },
+    { k: 'sky', type: 'select', label: 'Sky above horizon', show: isFloor,
+      opts: [['none', 'Fog color'], ...Object.entries(MATS).filter(([, m]) => m.id === 14).map(([k, m]) => [k, m.name])] },
+    { k: 'outRes', type: 'select', label: 'Render resolution', num: true, opts: [[240, '240p'], [480, '480p'], [720, '720p'], [0, 'Native']] },
+    { k: 'shade', type: 'range', label: 'Vertex shading', min: 0, max: 1, step: 0.01 },
+    { k: 'shadeSize', type: 'range', label: 'Vertex spacing (tiles)', min: 0.5, max: 8, step: 0.5 },
+    { k: 'shadeTint', type: 'color', label: 'Vertex tint color' },
+    { k: 'shadeTintAmt', type: 'range', label: 'Vertex tint amount', min: 0, max: 1, step: 0.01 },
+    { k: 'out15', type: 'check', label: '15-bit output' },
+    { k: 'outDither', type: 'check', label: 'Output dither (PS1)' },
+  ]],
+];
+
+const ctl = {};
+const root = document.getElementById('controls');
+function fmt(v){ return Number.isInteger(v) ? String(v) : v.toFixed(2); }
+
+for (const [title, items] of UI){
+  const sec = document.createElement('div'); sec.className = 'sec';
+  sec.innerHTML = `<h2>${title}</h2>`;
+  for (const d of items){
+    if (d.spec) d.show = () => !!MATS[S.mat][d.spec];
+    const row = document.createElement('div'); row.className = 'row';
+    if (d.type === 'random'){
+      row.innerHTML = `<div class="palbtns"><button class="primary" data-a="roll" title="Shortcut: R">Randomize</button>
+        <button data-a="undo" id="undoBtn" disabled>Undo</button></div>
+        <label class="check" style="margin-top:6px"><input type="checkbox" id="keepMat"> Keep material</label>`;
+      row.querySelector('.palbtns').onclick = e => {
+        if (e.target.dataset.a === 'roll') randomize(); else if (e.target.dataset.a === 'undo') undoRandom();
+      };
+      sec.appendChild(row); continue;
+    }
+    if (d.type === 'palette'){
+      row.innerHTML = `<div id="pal"></div><div class="palbtns">
+        <button data-a="add">+ color</button><button data-a="del">− color</button>
+        <button data-a="rev">Reverse</button><button data-a="reset">Reset</button></div>`;
+      row.querySelector('.palbtns').onclick = e => palAction(e.target.dataset.a);
+      sec.appendChild(row); continue;
+    }
+    if (d.type === 'check'){
+      row.innerHTML = `<label class="check"><input type="checkbox"> ${d.label}</label>`;
+      const el = row.querySelector('input');
+      el.onchange = () => set(d.k, el.checked);
+      ctl[d.k] = { d, el, row };
+    } else {
+      row.innerHTML = `<div class="lab"><span>${d.label}</span><span></span></div>`;
+      let el;
+      if (d.type === 'select'){
+        el = document.createElement('select');
+        for (const [v, t] of d.opts){ const o = document.createElement('option'); o.value = v; o.textContent = t; el.appendChild(o); }
+        el.onchange = () => set(d.k, d.num ? Number(el.value) : el.value);
+      } else if (d.type === 'color'){
+        el = document.createElement('input'); el.type = 'color';
+        el.oninput = () => set(d.k, el.value);
+      } else {
+        el = document.createElement('input'); el.type = 'range';
+        Object.assign(el, { min: d.min, max: d.max, step: d.step });
+        el.oninput = () => set(d.k, Number(el.value));
+      }
+      row.appendChild(el);
+      const [labEl, out] = row.querySelectorAll('.lab span');
+      ctl[d.k] = { d, el, row, out, labEl };
+    }
+    sec.appendChild(row);
+  }
+  root.appendChild(sec);
+}
+
+function set(k, v){
+  if (k === 'mat'){ applyMaterial(v); refreshUI(); return; }
+  if (k === 'bpm' || k === 'beats') keepPhase(() => { S[k] = v; });
+  else S[k] = v;
+  refreshUI();
+}
+
+// tiles visible in the flat view; Tiles across 0 keeps tiles square on the 16:9 frame
+function tileCounts(){ return { down: S.repeat, across: S.across || S.repeat * 16 / 9 }; }
+
+function refreshUI(){
+  for (const k of ['aux', 'rows', 'cols']){
+    const spec = MATS[S.mat][k];
+    if (spec){ ctl[k].labEl.textContent = spec[0]; Object.assign(ctl[k].el, { min: spec[1], max: spec[2], step: spec[3] }); }
+  }
+  for (const c of Object.values(ctl)){
+    const v = S[c.d.k];
+    if (c.d.type === 'check') c.el.checked = v;
+    else c.el.value = v;
+    if (c.out) c.out.textContent = c.d.type === 'range' ? fmt(v) : '';
+    c.row.classList.toggle('hidden', !!c.d.show && !c.d.show());
+  }
+  const t = tileCounts();
+  if (!S.across) ctl.across.out.textContent = `auto (${t.across.toFixed(2)})`;
+  buildPalette();
+}
+
+function buildPalette(){
+  const box = document.getElementById('pal');
+  box.innerHTML = '';
+  S.pal.forEach((hex, i) => {
+    const el = document.createElement('input'); el.type = 'color'; el.value = hex; el.title = `Index ${i}`;
+    el.oninput = () => { S.pal[i] = el.value; };
+    box.appendChild(el);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Randomize: start from a random preset, then roll every look parameter within
+// ranges that stay game-like. Palettes come from presets (sometimes borrowed from
+// another one) since fully random colors rarely look right. Display, tile size,
+// tempo and scroll are left alone: they're setup, not the look.
+// ---------------------------------------------------------------------------
+const undoStack = [];
+const rr = (a, b) => a + Math.random() * (b - a);
+const ri = (a, b) => Math.floor(rr(a, b + 1));
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const chance = p => Math.random() < p;
+const snap = (v, step) => Math.round(v / step) * step;
+function hslHex(h, s, l){
+  const f = n => { const k = (n + h / 30) % 12, c = l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(c * 255).toString(16).padStart(2, '0'); };
+  return '#' + f(0) + f(8) + f(4);
+}
+
+function randomize(){
+  undoStack.push(JSON.stringify(S));
+  if (undoStack.length > 50) undoStack.shift();
+  const keep = { N: S.N, bpm: S.bpm, beats: S.beats, frames: S.frames, scrollX: S.scrollX, scrollY: S.scrollY };
+  const keys = Object.keys(MATS);
+  // Keep material: reroll from the current material's preset, keeping its palette and overlay material
+  const keepMat = document.getElementById('keepMat').checked;
+  const pal = S.pal.slice(), overlay = S.overlay;
+  applyMaterial(keepMat ? S.mat : pick(keys));
+  const m = MATS[S.mat];
+
+  S.seed = ri(0, 999);
+  S.scale = Math.max(1, Math.min(12, Math.round(S.scale * rr(0.5, 2))));
+  S.oct = ri(2, 6); S.gain = rr(0.35, 0.7); S.vary = rr(0.3, 1.6);
+  S.warp = chance(0.5) ? rr(0, 0.6) : S.warp;
+  S.aux = snap(rr(m.aux[1], m.aux[2]), m.aux[3]);
+  for (const k of ['rows', 'cols']) if (m[k]) S[k] = snap(rr(m[k][1], m[k][2]), m[k][3]);
+  if (chance(0.15)) S.rotate = !S.rotate;
+
+  S.light = rr(0, 1.1); S.bump = rr(0.5, 2.5); S.angle = snap(rr(0, 360), 15) % 360;
+
+  if (keepMat) S.pal = pal;
+  else {
+    if (chance(0.3)) S.pal = pick(Object.values(MATS)).pal.slice();
+    if (chance(0.15)) S.pal.reverse();
+  }
+  S.ramp = chance(0.8) ? 1 : 0;
+  S.contrast = rr(0.9, 1.5); S.bright = rr(-0.1, 0.1); S.grain = rr(0, 0.15); S.dither = rr(0, 0.8);
+  if (chance(0.4)){ S.tint = hslHex(rr(0, 360), rr(0.4, 0.9), rr(0.4, 0.7)); S.tintAmt = rr(0.1, 0.5); S.tintScale = ri(1, 4); }
+
+  // overlays only from things that plausibly grow or pool on a surface
+  S.overlay = keepMat ? overlay : chance(0.35) ? pick(['moss', 'grass', 'jungle', 'dirt', 'granite', 'water', 'lava', 'rock']) : 'none';
+  S.ovMode = ri(0, 2); S.ovCover = rr(0.25, 0.55); S.ovScale = ri(2, 5); S.ovEdge = rr(0, 0.3); S.ovShadow = rr(0.1, 0.4);
+
+  S.evolve = ri(0, 2);
+  if ([5, 6, 7, 14].includes(m.id)) S.flow = pick([-2, -1, 1, 2]);
+  S.cycle = chance(0.15) ? pick([-1, 1]) : 0;
+
+  Object.assign(S, keep);
+  refreshUI();
+  document.getElementById('undoBtn').disabled = false;
+}
+
+function undoRandom(){
+  if (!undoStack.length) return;
+  Object.assign(S, JSON.parse(undoStack.pop()));
+  refreshUI();
+  document.getElementById('undoBtn').disabled = !undoStack.length;
+}
+
+function palAction(a){
+  if (a === 'add' && S.pal.length < 16) S.pal.push(S.pal[S.pal.length - 1]);
+  if (a === 'del' && S.pal.length > 2) S.pal.pop();
+  if (a === 'rev') S.pal.reverse();
+  if (a === 'reset') S.pal = MATS[S.mat].pal.slice();
+  buildPalette();
+}
+
+// ---------------------------------------------------------------------------
+// WebGL
+// ---------------------------------------------------------------------------
+const view = document.getElementById('view');
+const gl = view.getContext('webgl2', { antialias: false });
+if (!gl) document.body.innerHTML = '<p style="padding:20px">This tool needs WebGL2.</p>';
+
+function compile(fs){
+  const p = gl.createProgram();
+  for (const [type, src] of [[gl.VERTEX_SHADER, VERT], [gl.FRAGMENT_SHADER, fs]]){
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    gl.attachShader(p, s);
+  }
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const locs = {};
+  return { p, u: n => (n in locs ? locs[n] : (locs[n] = gl.getUniformLocation(p, n))) };
+}
+const genP = compile(GEN), compP = compile(COMP), dispP = compile(DISP), blitP = compile(BLIT);
+gl.bindVertexArray(gl.createVertexArray());
+
+function makeTarget(w, h){
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.REPEAT], [gl.TEXTURE_WRAP_T, gl.REPEAT]])
+    gl.texParameteri(gl.TEXTURE_2D, k, v);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return { tex, fb, w, h };
+}
+function freeTarget(t){ if (t){ gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fb); } }
+
+let tileT = null, baseT = null, overT = null, lowT = null, skyT = null;
+function ensureTargets(){
+  if (!tileT || tileT.w !== S.N){
+    for (const t of [tileT, baseT, overT]) freeTarget(t);
+    tileT = makeTarget(S.N, S.N); baseT = makeTarget(S.N, S.N); overT = makeTarget(S.N, S.N);
+  }
+  const lh = S.outRes || view.height, lw = S.outRes ? Math.round(lh * 16 / 9) : view.width;
+  if (!lowT || lowT.w !== lw || lowT.h !== lh){ freeTarget(lowT); lowT = makeTarget(lw, lh); }
+}
+
+const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+
+function renderGen(P, target, ph, eph = ph){
+  const { u } = genP;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
+  gl.viewport(0, 0, P.N, P.N);
+  gl.useProgram(genP.p);
+  const ints = { uN: P.N, uMat: MATS[P.mat].id, uStyle: P.style, uRotate: +P.rotate, uScale: P.scale, uOct: P.oct,
+    uRows: P.rows, uCols: P.cols, uEvolve: P.evolve, uFlow: P.flow, uPalN: P.pal.length, uRamp: P.ramp,
+    uCycle: P.cycle, uFifteen: +P.fifteen, uSeed: P.seed, uTintScale: P.tintScale };
+  for (const k in ints) gl.uniform1i(u(k), ints[k]);
+  const floats = { uGain: P.gain, uWarp: P.warp, uPhase: ph, uEvolvePhase: eph, uContrast: P.contrast, uBright: P.bright,
+    uDither: P.dither, uAux: P.aux, uVar: P.vary, uLight: P.light, uBump: P.bump,
+    uAngle: P.angle * Math.PI / 180, uGrain: P.grain, uTintAmt: P.tintAmt };
+  for (const k in floats) gl.uniform1f(u(k), floats[k]);
+  gl.uniform3fv(u('uTint'), hexRGB(P.tint));
+  const pal = new Float32Array(48);
+  P.pal.forEach((h, i) => pal.set(hexRGB(h), i * 3));
+  gl.uniform3fv(u('uPal'), pal);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+// ph moves (flow, palette cycle, scroll); eph develops (Evolve). Both 0..1 loops.
+function renderTile(ph, eph = ph){
+  const hasOver = S.overlay !== 'none';
+  renderGen(S, baseT, ph, eph);
+  if (hasOver) renderGen(overlaySettings(), overT, ph, eph);
+  const { u } = compP;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, tileT.fb);
+  gl.viewport(0, 0, S.N, S.N);
+  gl.useProgram(compP.p);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, baseT.tex);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, overT.tex);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.uniform1i(u('uBase'), 0); gl.uniform1i(u('uOver'), 1);
+  const ints = { uN: S.N, uHasOver: +hasOver, uMode: S.ovMode, uMaskScale: S.ovScale, uSeed: S.seed, uEvolve: S.evolve };
+  for (const k in ints) gl.uniform1i(u(k), ints[k]);
+  const floats = { uCover: S.ovCover, uEdge: S.ovEdge, uShadow: S.ovShadow, uAngle: S.angle * Math.PI / 180, uEvolvePhase: eph };
+  for (const k in floats) gl.uniform1f(u(k), floats[k]);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+function renderView(ph, eph = ph){
+  const skyOn = S.view > 0 && S.sky !== 'none';
+  let skyN = 64;
+  if (skyOn){
+    const P = skySettings(); skyN = P.N;
+    if (!skyT || skyT.w !== skyN){ freeTarget(skyT); skyT = makeTarget(skyN, skyN); }
+    renderGen(P, skyT, ph, eph);
+  }
+  const { u } = dispP;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, lowT.fb);
+  gl.viewport(0, 0, lowT.w, lowT.h);
+  gl.useProgram(dispP.p);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, skyOn ? skyT.tex : tileT.tex);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tileT.tex);
+  gl.uniform1i(u('uTile'), 0); gl.uniform1i(u('uSky'), 1);
+  gl.uniform1i(u('uSkyMode'), skyOn ? (MATS[S.sky].p.style === 4 ? 2 : 1) : 0); gl.uniform1i(u('uSkyN'), skyN);
+  gl.uniform1i(u('uN'), S.N); gl.uniform1i(u('uFilter'), S.filter); gl.uniform1i(u('uView'), S.view);
+  gl.uniform1i(u('uOut15'), +S.out15); gl.uniform1i(u('uOutDither'), +S.outDither);
+  gl.uniform2f(u('uRes'), lowT.w, lowT.h);
+  gl.uniform2f(u('uScroll'), (S.scrollX * ph) % 1, (S.scrollY * ph) % 1);
+  const t = tileCounts();
+  gl.uniform2f(u('uTiles'), t.across, t.down);
+  // floor views: at Tiles down 4 one tile spans one camera-height unit; Tiles across stretches X
+  gl.uniform2f(u('uDensity'), S.repeat / 4 * t.across / (S.repeat * 16 / 9), S.repeat / 4);
+  gl.uniform1f(u('uPitch'), S.pitch); gl.uniform1f(u('uHeight'), S.height);
+  gl.uniform1f(u('uFog'), S.fog);
+  // affine triangles are sized in 480p pixels so the warp looks the same at any render res
+  gl.uniform1f(u('uGrid'), S.grid * lowT.h / 480);
+  gl.uniform3fv(u('uFogCol'), hexRGB(S.fogCol));
+  gl.uniform1f(u('uShade'), S.shade); gl.uniform1f(u('uShadeSize'), S.shadeSize);
+  gl.uniform1f(u('uShadeTintAmt'), S.shadeTintAmt); gl.uniform3fv(u('uShadeTint'), hexRGB(S.shadeTint));
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, view.width, view.height);
+  gl.useProgram(blitP.p);
+  gl.bindTexture(gl.TEXTURE_2D, lowT.tex);
+  gl.uniform1i(blitP.u('uSrc'), 0);
+  gl.uniform2f(blitP.u('uDst'), view.width, view.height);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+// Read the tile back as top-down ImageData
+function readTile(){
+  const N = S.N, buf = new Uint8Array(N * N * 4);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, tileT.fb);
+  gl.readPixels(0, 0, N, N, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+  const img = new ImageData(N, N);
+  for (let y = 0; y < N; y++) img.data.set(buf.subarray((N - 1 - y) * N * 4, (N - y) * N * 4), y * N * 4);
+  return img;
+}
+
+// ---------------------------------------------------------------------------
+// Clock
+// ---------------------------------------------------------------------------
+const loopSec = () => S.beats * 60 / S.bpm;
+let playing = true, t0 = performance.now(), held = 0;
+const rawPhase = (now = performance.now()) => playing ? ((now - t0) / 1000 / loopSec()) % 1 : held;
+const stepPhase = p => S.frames ? Math.floor(p * S.frames) / S.frames : p;
+function seek(p, now = performance.now()){ held = p; t0 = now - p * loopSec() * 1000; }
+function keepPhase(fn){ const p = rawPhase(); fn(); seek(p); }
+
+const playBtn = document.getElementById('play');
+const scrub = document.getElementById('scrub');
+playBtn.onclick = () => { const p = rawPhase(); playing = !playing; seek(p); playBtn.textContent = playing ? 'Pause' : 'Play'; };
+scrub.oninput = () => { seek(Number(scrub.value)); };
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.metaKey || e.ctrlKey) return;
+  if (e.code === 'Space'){ e.preventDefault(); playBtn.click(); }
+  if (e.code === 'KeyR') randomize();
+});
+
+// ---------------------------------------------------------------------------
+// Frame loop
+// ---------------------------------------------------------------------------
+const tileC = document.getElementById('tile'), tileX = tileC.getContext('2d');
+const tile4C = document.getElementById('tile4'), tile4X = tile4C.getContext('2d');
+const phaseOut = document.getElementById('phaseOut'), tileCap = document.getElementById('tileCap');
+
+function sizeView(){
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.round(view.clientWidth * dpr);
+  view.width = w; view.height = Math.round(w * 9 / 16);
+}
+new ResizeObserver(sizeView).observe(view);
+
+function frame(now){
+  const raw = rawPhase(now), ph = stepPhase(raw);
+  ensureTargets();
+  renderTile(ph);
+  renderView(ph);
+  const img = readTile(), N = S.N;
+  if (tileC.width !== N){ tileC.width = tileC.height = N; tile4C.width = tile4C.height = N * 2; }
+  tileX.putImageData(img, 0, 0);
+  for (const [x, y] of [[0, 0], [N, 0], [0, N], [N, N]]) tile4X.putImageData(img, x, y);
+  if (document.activeElement !== scrub) scrub.value = raw;
+  phaseOut.textContent = `${(raw * loopSec()).toFixed(2)}s / ${loopSec().toFixed(2)}s`;
+  tileCap.textContent = `${N}×${N} · ${S.pal.length} colors`;
+  if (rec.active) rec.tick(now);
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+const note = document.getElementById('note');
+function download(blob, name){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+const baseName = () => `${S.mat}_${S.N}px_seed${S.seed}`;
+
+function scaledCanvas(src, k){
+  const c = document.createElement('canvas');
+  c.width = src.width * k; c.height = src.height * k;
+  const x = c.getContext('2d'); x.imageSmoothingEnabled = false;
+  x.drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+const expScale = () => Number(document.getElementById('expScale').value);
+
+document.getElementById('expTile').onclick = () => {
+  scaledCanvas(tileC, expScale()).toBlob(b => download(b, `${baseName()}.png`));
+};
+
+document.getElementById('expSheet').onclick = () => {
+  const F = S.frames || 16, N = S.N;
+  let cols = Math.ceil(Math.sqrt(F));
+  while (F % cols) cols++;
+  const rows = F / cols;
+  const sheet = document.createElement('canvas');
+  sheet.width = cols * N; sheet.height = rows * N;
+  const x = sheet.getContext('2d');
+  for (let i = 0; i < F; i++){
+    renderTile(i / F);
+    x.putImageData(readTile(), (i % cols) * N, Math.floor(i / cols) * N);
+  }
+  scaledCanvas(sheet, expScale()).toBlob(b => download(b, `${baseName()}_sheet_${F}f_${cols}x${rows}.png`));
+  note.textContent = `Saved ${F} frames as a ${cols}×${rows} grid, left to right, top to bottom.`;
+};
+
+document.getElementById('expJson').onclick = async () => {
+  const json = JSON.stringify(S, null, 2);
+  try { await navigator.clipboard.writeText(json); note.textContent = 'Preset JSON copied to clipboard.'; }
+  catch { download(new Blob([json], { type: 'application/json' }), `${baseName()}.json`); }
+};
+
+const recBtn = document.getElementById('rec');
+const rec = {
+  active: false, recorder: null, end: 0,
+  start(){
+    const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
+    const mime = types.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
+    if (!mime){ note.textContent = 'Video recording is not supported in this browser.'; return; }
+    const chunks = [], name = `${baseName()}_${S.bpm}bpm_${S.beats}beats`;
+    this.recorder = new MediaRecorder(view.captureStream(60), { mimeType: mime, videoBitsPerSecond: 40e6 });
+    this.recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+    this.recorder.onstop = () => {
+      const ext = mime.includes('mp4') ? 'mp4' : 'webm';
+      download(new Blob(chunks, { type: mime }), `${name}.${ext}`);
+      recBtn.classList.remove('on'); recBtn.textContent = 'Record one loop (video)';
+      note.textContent = `Saved ${view.width}×${view.height} ${ext}. Convert to DXV or HAP for Resolume.`;
+    };
+    playing = true; playBtn.textContent = 'Pause';
+    const now = performance.now();
+    seek(0, now);
+    this.end = now + loopSec() * 1000;
+    this.active = true;
+    this.recorder.start();
+    recBtn.classList.add('on'); recBtn.textContent = 'Recording…';
+  },
+  tick(now){ if (now >= this.end){ this.active = false; this.recorder.stop(); } },
+};
+recBtn.onclick = () => { if (!rec.active) rec.start(); };
+
+// ---------------------------------------------------------------------------
+applyMaterial('cobble');
+refreshUI();
+sizeView();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
