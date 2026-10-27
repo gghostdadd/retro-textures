@@ -1187,6 +1187,18 @@ function programsReady(){
     return ok;
   } catch (e){ fail(e); }
 }
+// Once the page is drawing, compile the other materials one at a time in the background, so
+// picking one later (or Randomize) doesn't wait on a compile. Only where compiles don't
+// block the page; without the extension each would freeze it for as long as it takes.
+const warmIds = [...new Set(Object.values(MATS).map(m => m.id))];
+let warming = null;
+function warmUp(){
+  if (!parallel) return;
+  if (warming !== null && !genProg(warming, false)) return;
+  warming = warmIds.find(id => !genProgs[id]) ?? null;
+  if (warming !== null) genProg(warming, false);
+}
+
 let compP, dispP, blitP;
 function startGL(){
   compP = startCompile('Overlay', COMP); dispP = startCompile('Display', DISP); blitP = startCompile('Upscale', BLIT);
@@ -1304,13 +1316,42 @@ function renderView(ph, eph = ph){
 }
 
 // Read the tile back as top-down ImageData
+function topDown(buf, N){
+  const img = new ImageData(N, N);
+  for (let y = 0; y < N; y++) img.data.set(buf.subarray((N - 1 - y) * N * 4, (N - y) * N * 4), y * N * 4);
+  return img;
+}
 function readTile(){
   const N = S.N, buf = new Uint8Array(N * N * 4);
   gl.bindFramebuffer(gl.FRAMEBUFFER, tileT.fb);
   gl.readPixels(0, 0, N, N, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-  const img = new ImageData(N, N);
-  for (let y = 0; y < N; y++) img.data.set(buf.subarray((N - 1 - y) * N * 4, (N - y) * N * 4), y * N * 4);
-  return img;
+  return topDown(buf, N);
+}
+
+// The previews read the tile back without stalling the GPU: readPixels goes into a buffer,
+// and the copy out happens a frame or two later, once a fence says the GPU got there.
+// (A plain readPixels every frame waits for the GPU to finish, which is slow on Windows.)
+const previewBuf = gl.createBuffer();
+let previewRead = null, previewSize = 0;
+function readTileLater(show){
+  if (previewRead){
+    if (gl.clientWaitSync(previewRead.sync, 0, 0) === gl.TIMEOUT_EXPIRED) return;
+    gl.deleteSync(previewRead.sync);
+    const N = previewRead.N, buf = new Uint8Array(N * N * 4);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, previewBuf);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, buf);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    previewRead = null;
+    show(topDown(buf, N), N);
+  }
+  const N = S.N;
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, previewBuf);
+  if (previewSize !== N){ gl.bufferData(gl.PIXEL_PACK_BUFFER, N * N * 4, gl.STREAM_READ); previewSize = N; }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, tileT.fb);
+  gl.readPixels(0, 0, N, N, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  previewRead = { sync: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0), N };
+  gl.flush();
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,10 +1401,13 @@ function frame(now){
   ensureTargets();
   renderTile(ph);
   renderView(ph);
-  const img = readTile(), N = S.N;
-  if (tileC.width !== N){ tileC.width = tileC.height = N; tile4C.width = tile4C.height = N * 2; }
-  tileX.putImageData(img, 0, 0);
-  for (const [x, y] of [[0, 0], [N, 0], [0, N], [N, N]]) tile4X.putImageData(img, x, y);
+  readTileLater((img, N) => {
+    if (tileC.width !== N){ tileC.width = tileC.height = N; tile4C.width = tile4C.height = N * 2; }
+    tileX.putImageData(img, 0, 0);
+    for (const [x, y] of [[0, 0], [N, 0], [0, N], [N, N]]) tile4X.putImageData(img, x, y);
+  });
+  warmUp();
+  const N = S.N;
   if (document.activeElement !== scrub) scrub.value = raw;
   phaseOut.textContent = `${(raw * loopSec()).toFixed(2)}s / ${loopSec().toFixed(2)}s`;
   tileCap.textContent = `${N}×${N} · ${S.pal.length} colors`;
