@@ -470,6 +470,12 @@ M cliff(vec2 uv){
   return M(h, t, -1.0);
 }
 
+// The page compiles one program per material with MAT_ID defined, so each holds only that
+// material's code (Direct3D compiles every reachable call inline, and all 16 at once froze
+// Windows browsers). Without MAT_ID (the FFGL plugin) uMat picks the material at runtime.
+#ifdef MAT_ID
+#define uMat MAT_ID
+#endif
 M material(vec2 uv){
   if (uMat == 0) return stone(uv);
   if (uMat == 1) return brick(uv);
@@ -1134,31 +1140,57 @@ view.addEventListener('webglcontextlost', e => {
   say('The graphics driver reset and WebGL stopped.', 'Reload the page to start again.');
 });
 
-function compile(name, fs){
-  const p = gl.createProgram();
+// Programs compile in the background where the browser supports it (KHR_parallel_shader_compile,
+// in Chrome and Edge), so a slow first compile on Windows doesn't freeze the page.
+const parallel = gl.getExtension('KHR_parallel_shader_compile');
+function startCompile(name, fs){
+  const p = gl.createProgram(), shaders = [];
   for (const [type, src] of [[gl.VERTEX_SHADER, VERT], [gl.FRAGMENT_SHADER, fs]]){
-    const s = gl.createShader(type);
-    gl.shaderSource(s, src); gl.compileShader(s);
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(`${name} shader: ${gl.getShaderInfoLog(s) || 'compile failed'}`);
-    gl.attachShader(p, s);
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src); gl.compileShader(sh); gl.attachShader(p, sh); shaders.push(sh);
   }
   gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(`${name} shader: ${gl.getProgramInfoLog(p) || 'link failed'}`);
   const locs = {};
-  return { p, u: n => (n in locs ? locs[n] : (locs[n] = gl.getUniformLocation(p, n))) };
+  return { name, p, shaders, ready: false, u: n => (n in locs ? locs[n] : (locs[n] = gl.getUniformLocation(p, n))) };
 }
-let genP, compP, dispP, blitP;
-// Compiled after the page has painted "Compiling shaders…": on Windows the first compile
-// can take a few seconds.
-function startGL(){
-  try {
-    genP = compile('Generator', GEN); compP = compile('Overlay', COMP); dispP = compile('Display', DISP); blitP = compile('Upscale', BLIT);
-  } catch (e){
-    if (!gl.isContextLost()) say("Couldn't compile the shaders on this GPU.", String(e.message || e));
-    throw e;
+// True once the program is linked; wait = true blocks until it is. Throws with the
+// compiler's log if it failed.
+function isReady(prog, wait){
+  if (prog.ready) return true;
+  if (!wait && parallel && !gl.getProgramParameter(prog.p, parallel.COMPLETION_STATUS_KHR)) return false;
+  if (!gl.getProgramParameter(prog.p, gl.LINK_STATUS)){
+    const log = prog.shaders.map(sh => gl.getShaderInfoLog(sh)).filter(Boolean).join('\n') || gl.getProgramInfoLog(prog.p) || 'link failed';
+    throw new Error(`${prog.name} shader: ${log}`);
   }
+  prog.ready = true;
+  return true;
+}
+function fail(e){
+  if (!gl.isContextLost()) say("Couldn't compile the shaders on this GPU.", String(e.message || e));
+  throw e;
+}
+
+// One generator program per material, compiled the first time that material is drawn.
+const genProgs = {};
+function genProg(id, wait){
+  const prog = genProgs[id] ||= startCompile(`Generator (material ${id})`, GEN.replace('#version 300 es', `#version 300 es\n#define MAT_ID ${id}`));
+  try { return isReady(prog, wait) ? prog : null; } catch (e){ fail(e); }
+}
+// Starts every program the current settings need; true once they're all ready.
+function programsReady(){
+  try {
+    let ok = [compP, dispP, blitP].every(p => isReady(p, false));
+    const ids = [MATS[S.mat].id];
+    if (S.overlay !== 'none') ids.push(MATS[S.overlay].id);
+    if (S.view > 0 && S.sky !== 'none') ids.push(MATS[S.sky].id);
+    for (const id of ids) ok = !!genProg(id, false) && ok;
+    return ok;
+  } catch (e){ fail(e); }
+}
+let compP, dispP, blitP;
+function startGL(){
+  compP = startCompile('Overlay', COMP); dispP = startCompile('Display', DISP); blitP = startCompile('Upscale', BLIT);
   gl.bindVertexArray(gl.createVertexArray());
-  say('');
   requestAnimationFrame(frame);
 }
 
@@ -1188,10 +1220,10 @@ function ensureTargets(){
 const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
 
 function renderGen(P, target, ph, eph = ph){
-  const { u } = genP;
+  const prog = genProg(MATS[P.mat].id, true), { u } = prog;
   gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
   gl.viewport(0, 0, P.N, P.N);
-  gl.useProgram(genP.p);
+  gl.useProgram(prog.p);
   const ints = { uN: P.N, uMat: MATS[P.mat].id, uStyle: P.style, uRotate: +P.rotate, uScale: P.scale, uOct: P.oct,
     uRows: P.rows, uCols: P.cols, uEvolve: P.evolve, uFlow: P.flow, uPalN: P.pal.length, uRamp: P.ramp,
     uCycle: P.cycle, uFifteen: +P.fifteen, uSeed: P.seed, uTintScale: P.tintScale };
@@ -1209,6 +1241,7 @@ function renderGen(P, target, ph, eph = ph){
 
 // ph moves (flow, palette cycle, scroll); eph develops (Evolve). Both 0..1 loops.
 function renderTile(ph, eph = ph){
+  isReady(compP, true);
   const hasOver = S.overlay !== 'none';
   renderGen(S, baseT, ph, eph);
   if (hasOver) renderGen(overlaySettings(), overT, ph, eph);
@@ -1228,6 +1261,7 @@ function renderTile(ph, eph = ph){
 }
 
 function renderView(ph, eph = ph){
+  isReady(dispP, true); isReady(blitP, true);
   const skyOn = S.view > 0 && S.sky !== 'none';
   let skyN = 64;
   if (skyOn){
@@ -1313,7 +1347,15 @@ function sizeView(){
 }
 new ResizeObserver(sizeView).observe(view);
 
+let drewFrame = false;
 function frame(now){
+  // Keep showing the last frame (or the message) until the programs this frame needs exist.
+  if (!programsReady()){
+    if (!drewFrame) say('Compiling shaders…');
+    requestAnimationFrame(frame);
+    return;
+  }
+  if (!drewFrame){ say(''); drewFrame = true; }
   const raw = rawPhase(now), ph = stepPhase(raw);
   ensureTargets();
   renderTile(ph);
